@@ -1,19 +1,18 @@
+import array
+
 class OutOfBoundsException(Exception): pass
 
 
-class Memory(list):
+class Memory:
     def __init__(self, size):
-        super().__init__([0] * size)
-        self.set = super().__setitem__
-        self.get = super().__getitem__
+        # self.mem = array.array('H', [0] * size)
+        self.mem = [0] * size
 
-    def __setitem__(self, index, value):
-        index = index & 0xFFFF
-        self.set(index, value)
+    def __setitem__(self, key, value):
+        self.mem[key] = value & 0xFFFF
 
-    def __getitem__(self, index):
-        index = index & 0xFFFF
-        return self.get(index)
+    def __getitem__(self, key):
+        return self.mem[key]
 
     def frombytes(self, bytestring, origin):
         pairs = zip(bytestring[::2], bytestring[1::2])

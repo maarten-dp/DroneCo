@@ -5,6 +5,7 @@ import select
 import tty
 import termios
 from bitarray.util import ba2int, int2ba
+from ops import Operation
 
 
 CACHE = {}
@@ -77,8 +78,8 @@ MR_KBDR = 0xFE02 # Keyboard data
 
 RUNNING = 0
 MAX_MEMORY_ADDRESS = 256 * 256
-MEMORY = Memory(MAX_MEMORY_ADDRESS)
-REGISTERS = Memory(RCOUNT)
+MEMORY = [0] * MAX_MEMORY_ADDRESS
+REGISTERS = [0, 0, 0, 0, 0, 0, 0, 0, 0x3000, 0]
 OPCODES = {}
 TRAPS = {}
 
@@ -89,7 +90,11 @@ def load_image(image):
     origin = int.from_bytes(image.read(2), byteorder='big')
     # load actual program instructions in the origin address.
     max_read = MAX_MEMORY_ADDRESS - origin
-    MEMORY.frombytes(image.read(max_read), origin)
+
+    bytestring = image.read(max_read)
+    pairs = zip(bytestring[::2], bytestring[1::2])
+    for address, (b1, b2) in enumerate(pairs, origin):
+        MEMORY[address] = (b1 << 8 | b2)
 
 
 def mem_read(address):
@@ -105,7 +110,7 @@ def mem_read(address):
 
 def mem_write(address, value):
     address = address & 0xFFFF
-    MEMORY[address] = value
+    MEMORY[address] = value & 0xFFFF
 
 
 def check_key():
@@ -144,85 +149,49 @@ def update_flags(val):
 
 
 ### OPCODES ###
-def add(instruction):
-    r0, r1, r2, imm5, imm_flag = decode(instruction,
-        '1110 0000 0000',
-        '0001 1100 0000',
-        '0000 0000 0111',
-        '0000 0001 1111',
-        '0000 0010 0000'
-    )
-
+def add(r0, r1, r2, imm5, imm_flag):
     if imm_flag:
         val = (REGISTERS[r1] + extend_sign(imm5, 5)) & 0xFFFF
     else:
         val = (REGISTERS[r1] + REGISTERS[r2]) & 0xFFFF
-
     REGISTERS[r0] = val
     update_flags(val)
 
 
-def load_indirect(instruction):
-    r0, pc_offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1111 1111',
-    )
+def load_indirect(r0, pc_offset):
     pc_offset = extend_sign(pc_offset, 9)
     val = mem_read(Registers[RPC] + pc_offset)
-    REGISTERS[r0] = val
+    REGISTERS[r0] = val & 0xFFFF
     update_flags(val)
 
 
-def b_and(instruction):
-    r0, r1, r2, imm5, imm_flag = decode(instruction,
-        '1110 0000 0000',
-        '0001 1100 0000',
-        '0000 0000 0111',
-        '0000 0001 1111',
-        '0000 0010 0000'
-    )
+def b_and(r0, r1, r2, imm5, imm_flag):
     if imm_flag:
-        val = REGISTERS[r1] & extend_sign(imm5, 5)
+        val = REGISTERS[r1] & extend_sign(imm5, 5) & 0xFFFF
     else:
-        val = REGISTERS[r1] & REGISTERS[r2]
+        val = REGISTERS[r1] & REGISTERS[r2] & 0xFFFF
     REGISTERS[r0] = val
     update_flags(val)
 
 
-def b_not(instruction):
-    r0, r1 = decode(instruction,
-        '1110 0000 0000',
-        '0001 1100 0000',
-    )
+def b_not(r0, r1, _):
     # REGISTERS[r0] = 0xFFF ^ REGISTERS[r1]
-    val = ~REGISTERS[r1]
+    val = ~REGISTERS[r1] & 0xFFFF
     REGISTERS[r0] = val
     update_flags(val)
 
 
-def branch(instruction):
-    cond_flag, pc_offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1111 1111',
-    )
+def branch(cond_flag, pc_offset):
     pc_offset = extend_sign(pc_offset, 9)
     if cond_flag & REGISTERS[RCOND]:
-        REGISTERS[RPC] =  (REGISTERS[RPC] + pc_offset) & 0xFFFF
+        REGISTERS[RPC] = (REGISTERS[RPC] + pc_offset) & 0xFFFF
 
 
-def jump(instruction):
-    r0, = decode(instruction,
-        '0001 1100 0000'
-    )
+def jump(r0):
     REGISTERS[RPC] = REGISTERS[r0]
 
 
-def jump_register(instruction):
-    long_flag, long_pc_offset, r1 = decode(instruction,
-        '1000 0000 0000',
-        '0111 1111 1111',
-        '0001 1100 0000'
-    )
+def jump_register(long_flag, long_pc_offset, r1):
     REGISTERS[RR7] = REGISTERS[RPC]
     if long_flag:
         long_pc_offset = extend_sign(long_pc_offset, 11)
@@ -231,73 +200,44 @@ def jump_register(instruction):
         REGISTERS[RPC] = REGISTERS[r1]
 
 
-def load(instruction):
-    r0, pc_offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1111 1111',
-    )
+def load(r0, pc_offset):
     pc_offset = extend_sign(pc_offset, 9)
-    val = mem_read(REGISTERS[RPC] + pc_offset)
+    val = mem_read(REGISTERS[RPC] + pc_offset) & 0xFFFF
     REGISTERS[r0] = val
     update_flags(val)
 
 
-def load_register(instruction):
-    r0, r1, offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1100 0000',
-        '0000 0011 1111',
-    )
+def load_register(r0, r1, offset):
     offset = extend_sign(offset, 6)
-    val = mem_read(REGISTERS[r1] + offset)
+    val = mem_read(REGISTERS[r1] + offset) & 0xFFFF
     REGISTERS[r0] = val
     update_flags(val)
 
 
-def load_effective_address(instruction):
-    r0, pc_offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1111 1111',
-    )
+def load_effective_address(r0, pc_offset):
     pc_offset = extend_sign(pc_offset, 9)
     val = (REGISTERS[RPC] + pc_offset) & 0xFFFF
     REGISTERS[r0] = val
     update_flags(val)
 
 
-def store(instruction):
-    r0, pc_offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1111 1111',
-    )
+def store(r0, pc_offset):
     pc_offset = extend_sign(pc_offset, 9)
     mem_write(REGISTERS[RPC] + pc_offset, REGISTERS[r0])
 
 
-def store_indirect(instruction):
-    r0, pc_offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1111 1111',
-    )
+def store_indirect(r0, pc_offset):
     pc_offset = extend_sign(pc_offset, 9)
     value = mem_read(REGISTERS[RPC] + pc_offset)
     mem_write(value, REGISTERS[r0])
 
 
-def store_register(instruction):
-    r0, r1, offset = decode(instruction,
-        '1110 0000 0000',
-        '0001 1100 0000',
-        '0000 0011 1111',
-    )
+def store_register(r0, r1, offset):
     offset = extend_sign(offset, 6)
     mem_write(REGISTERS[r1] + offset, REGISTERS[r0])
 
 
-def trap(instruction):
-    op, = decode(instruction,
-        '0000 1111 1111',
-    )
+def trap(op):
     TRAPS[op]()
 
 
@@ -401,9 +341,15 @@ def main():
         # if i == 141:
         #     import pdb; pdb.set_trace()
         # i+=1
-        op = instr >> 12
+        op, args = Operation.parse(instr)
+
+        OPCODES[op](*args)
         # print(op)
-        OPCODES[op](instr & 0xFFF)
+        # if op == 0:
+        #     import pdb; pdb.set_trace()
+        # op = instr >> 12
+        # print(op)
+        # OPCODES[op](instr & 0xFFF)
 
 
 if __name__ == '__main__':
