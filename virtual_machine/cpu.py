@@ -5,7 +5,7 @@ import select
 import tty
 import termios
 from bitarray.util import ba2int, int2ba
-from ops import Operation
+from ops import parse
 
 
 CACHE = {}
@@ -341,7 +341,7 @@ def main():
         # if i == 141:
         #     import pdb; pdb.set_trace()
         # i+=1
-        op, args = Operation.parse(instr)
+        op, args = parse(instr)
 
         OPCODES[op](*args)
         # print(op)

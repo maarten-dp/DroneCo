@@ -1,41 +1,8 @@
 import array
 import sys
 from copy import deepcopy
+from .ops import encode, TRAPS, OPS
 
-ADD = AND = [
-    '1110 0000 0000',
-    '0001 1100 0000',
-    '0000 0010 0000',
-    '0000 0001 1111',
-]
-LD = ST = STI = BR = LEA = LDI = [
-    '1110 0000 0000',
-    '0001 1111 1111',
-]
-JMP = RET = [
-    '0001 1100 0000',
-]
-JSR = [
-    '1000 0000 0000',
-    '0111 1111 1111', 
-]
-JSRR = [
-    '1000 0000 0000',
-    '0001 1100 0000', 
-]
-NOT = [
-    '1110 0000 0000',
-    '0001 1100 0000',
-    '0000 0011 1111'
-]
-STR = LDR = [
-    '1110 0000 0000',
-    '0001 1100 0000',
-    '0000 0011 1111',
-]
-TRAP = [
-    '0000 1111 1111',
-]
 
 REG = {
     "R0": 0,
@@ -46,48 +13,6 @@ REG = {
     "R5": 5,
     "R6": 6,
     "R7": 7,
-}
-
-OPS = {
-    "BR": (0, BR),        # branch
-    "BRn": (0, BR),       # branch on negative flag
-    "BRp": (0, BR),       # branch on positive flag
-    "BRz": (0, BR),       # branch on zero flag
-    "BRnp": (0, BR),      # branch on negative or positive flag
-    "BRnz": (0, BR),      # branch on negative or zero flag
-    "BRzp": (0, BR),      # branch on zero or positive flag
-    "BRnzp": (0, BR),     # branch on any flag
-
-    "ADD": (1, ADD),      # add 
-    "LD": (2, LD),        # load
-    "ST": (3, ST),        # store
-
-    "JSR": (4, JSR),      # jump register
-    "JSRR": (4, JSRR),    # jump register
-
-    "AND": (5, AND),      # bitwise and
-    "LDR": (6, LDR),      # load register
-    "STR": (7, STR),      # store register
-    "RTI": (8, None),     # unused
-    "NOT": (9, NOT),      # bitwise not
-    "LDI": (10, LDI),     # load indirect
-    "STI": (11, STI),     # store indirect
-
-    "JMP": (12, JMP),     # jump
-    "RET": (12, RET),
-
-    "RES": (13, None),    # reserved (unused)
-    "LEA": (14, LEA),     # load effective address
-    "TRAP": (15, TRAP),   # execute trap
-}
-
-TRAPS = {
-    "GETc": 0x20,
-    "OUT": 0x21,
-    "PUTs": 0x22,
-    "IN": 0x23,
-    "PUTsp": 0x24,
-    "HALT": 0x25,
 }
 
 BASE_MAPPING = {
@@ -101,20 +26,6 @@ BASE_MAPPING = {
 
 def raise_parse_error():
     import pdb; pdb.set_trace()
-
-
-def encode(schema, *args):
-    encoded = 0
-    for mask, val in zip(schema, args):
-        mask = mask.replace(' ', '')
-        shift = 11 - mask.rfind('1')
-        val = (val << shift) & int(mask, 2)
-        # try:
-        #     assert val == val & int(mask, 2)
-        # except:
-        #     import pdb; pdb.set_trace()
-        encoded += val
-    return encoded
 
 
 def is_int(arg):
@@ -135,6 +46,8 @@ class Addressable:
         return self.address + 1
 
     def get_value(self, value):
+        if value is None:
+            return value
         if value in REG:
             return REG[value]
         elif value in self.labels:
@@ -153,8 +66,6 @@ class OP(Addressable):
             return [0xC1C0]
         op, args = self.op
         args = args.replace(' ', '').split(',')
-        opcode, schema = OPS[op]
-        opcode = opcode << 12
 
         if op.startswith('BR'):
             n = ('n' in op) << 2
@@ -165,7 +76,11 @@ class OP(Addressable):
                 args[1] = str((self.labels[args[1]].address - (self.address + 1)) & 0xFFF)
         if op in ('AND', 'ADD'):
             imm = str(int(args[2] not in REG))
-            args.insert(-1, imm)
+            if imm == '1':
+                args.insert(-1, None)
+            else:
+                args.append(None)
+            args.append(imm)
         if op in ('LD', 'LEA', 'LDI', 'ST', 'STI'):
             args[1] = str((self.labels[args[1]].address - (self.address + 1)) & 0xFFF)
         if 'JSR' in op:
@@ -174,10 +89,11 @@ class OP(Addressable):
                 long_offset = '1'
                 args[0] = str((self.labels[args[0]].address - (self.address + 1)) & 0xFFF)
             args.insert(0,long_offset)
+            args.append(None)
         if 'NOT' in op:
             args.append(str(0b111111))
 
-        return [opcode + encode(schema, *[self.get_value(a) for a in args])]
+        return [encode(op, *[self.get_value(a) for a in args])]
 
 
 class Variable(Addressable):
@@ -206,10 +122,7 @@ class Variable(Addressable):
 
 class Trap(Addressable):
     def to_bytes(self):
-        print(self.address, self.op)
-        opcode, schema = OPS['TRAP']
-        opcode = opcode << 12
-        return [opcode + encode(schema, TRAPS[self.op[0]], opcode)]
+        return [encode('TRAP', TRAPS[self.op[0]])]
 
 
 def sanitize_line(line):
@@ -221,17 +134,18 @@ def sanitize_line(line):
     return line.split(' ', 1)
 
 
-def write(orig, statements):
+def prepare_data(orig, statements):
 
     byte_data = [orig]
     for statement in statements:
-        # if 0x0030 in statement.to_bytes():
-        #     import pdb; pdb.set_trace()
         byte_data.extend(statement.to_bytes())
 
     data = array.array('H', byte_data)
     data.byteswap()
+    return data
 
+
+def write(data):
     with open('out.sym', 'wb') as fh:
         fh.write(data.tobytes())
 
@@ -273,11 +187,12 @@ def process_lines(lines):
             labels[statement.op[0]] = statement
         address = statement.get_next_address()
         statements.append(statement)
-    write(orig, statements)
+    return orig, statements
 
 
 if __name__ == '__main__':
     path = sys.argv[1]
     with open(path, 'r') as fh:
         lines = fh.readlines()
-    process_lines(lines)
+    data = prepare_date(*process_lines(lines))
+    write(data)
